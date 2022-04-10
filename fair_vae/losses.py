@@ -20,7 +20,8 @@ def MMD(a, b):
 
 
 def kld_loss(mu, logvar):
-    return -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+    kld = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+    return kld
 
 
 def reconstruction_loss(transformer: DataTransformer, recon_x, x, sigmas=None, loss_factor=1.0):

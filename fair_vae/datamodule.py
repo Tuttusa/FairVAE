@@ -1,7 +1,9 @@
+import typing
 from typing import Any, Optional
 import numpy as np
-import  pandas as pd
+import pandas as pd
 import pytorch_lightning as pl
+from pydantic import BaseModel
 from sklearn.model_selection import train_test_split
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -238,31 +240,89 @@ class DataTransformer(object):
         }
 
 
+class VAEData(BaseModel):
+    class Config:
+        arbitrary_types_allowed = True
+
+    data: typing.Any
+    discrete_columns: tuple = []
+    use_transformer: bool = False
+    transformer: typing.Optional[DataTransformer] = DataTransformer()
+
+    @property
+    def size(self):
+        if self.use_transformer:
+            return self.transformer.output_dimensions
+        return self.data.shape[1]
+
+
 class VAEDataModule(pl.LightningDataModule):
-    def __init__(self, data, discrete_columns=tuple(), batch_size: int = 500, shuffle=True, use_transform=False,
+    def __init__(self, x_data: VAEData, t_data: VAEData = None, y_data: VAEData = None, discrete_columns=tuple(),
+                 batch_size: int = 500, shuffle=True,
+                 use_transform=False,
                  test_rate=0.33, val_rate=0.05):
         super().__init__()
         self.batch_size = batch_size
         self.shuffle = shuffle
-        self.data = data
+
+        self.x_data = x_data
+        self.t_data = t_data
+        self.y_data = y_data
+
         self.discrete_columns = discrete_columns
         self.use_transform = use_transform
+
+        self.transformer = {
+            "x": DataTransformer(),
+            "t": DataTransformer(),
+            "y": DataTransformer()
+        }
+
         self.test_rate = test_rate
         self.val_rate = val_rate
 
-    def setup(self, stage: Optional[str] = None):
-        self.transformer = DataTransformer()
+    def _setup(self, data_config: VAEData):
 
-        if self.use_transform:
-            self.transformer.fit(self.data, self.discrete_columns)
-            self.data = self.transformer.transform(self.data)
+        data = data_config.data
 
-        self.train_data, self.test_data = train_test_split(self.data, test_size=self.test_rate)
-        self.test_data, self.val_data = train_test_split(self.test_data, test_size=self.val_rate)
+        if data_config.use_transformer:
+            data_config.transformer.fit(data, data_config.discrete_columns)
+            data = data_config.transformer.transform(data)
 
-        self.train_data = self._make_tensor_dataset(self.train_data)
-        self.val_data = self._make_tensor_dataset(self.val_data)
-        self.test_data = self._make_tensor_dataset(self.test_data)
+        train_data, test_data = train_test_split(data, test_size=self.test_rate)
+        test_data, val_data = train_test_split(test_data, test_size=self.val_rate)
+
+        train_data = torch.from_numpy(train_data.astype('float32'))
+        test_data = torch.from_numpy(test_data.astype('float32'))
+        val_data = torch.from_numpy(val_data.astype('float32'))
+
+        return train_data, test_data, val_data
+
+    def setup(self, **kwargs):
+
+        x_train_data, x_test_data, x_val_data = self._setup(self.x_data)
+
+        train_data = [x_train_data]
+        val_data = [x_val_data]
+        test_data = [x_test_data]
+
+        if self.t_data is not None:
+            t_train_data, t_test_data, t_val_data = self._setup(self.t_data)
+
+            train_data.append(t_train_data)
+            test_data.append(t_test_data)
+            val_data.append(t_val_data)
+
+        if self.y_data is not None:
+            y_train_data, y_test_data, y_val_data = self._setup(self.y_data)
+
+            train_data.append(y_train_data)
+            test_data.append(y_test_data)
+            val_data.append(y_val_data)
+
+        self.train_data = TensorDataset(*train_data)
+        self.val_data = TensorDataset(*val_data)
+        self.test_data = TensorDataset(*test_data)
 
     def _make_tensor_dataset(self, data):
         return TensorDataset(torch.from_numpy(data.astype('float32')))

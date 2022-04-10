@@ -1,6 +1,6 @@
 from pytorch_lightning import Callback
+from pytorch_lightning.callbacks import ProgressBar
 from tqdm import tqdm
-from pytorch_lightning.callbacks import TQDMProgressBar
 import pathlib
 import wandb
 from pytorch_lightning.loggers import WandbLogger
@@ -10,7 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-class LitProgressBar(TQDMProgressBar):
+class LitProgressBar(ProgressBar):
 
     def init_validation_tqdm(self):
         bar = tqdm(

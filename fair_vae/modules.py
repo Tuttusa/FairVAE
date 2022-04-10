@@ -8,6 +8,8 @@ class Encoder(nn.Module):
 
         self.mode = mode
 
+        self.input_size = input_size
+
         seq = []
         dim = input_size
         for item in list(compress_dims):
@@ -28,7 +30,7 @@ class Encoder(nn.Module):
         if self.mode == 'VAE':
             return self.enc_mu(h1), self.enc_std(h1)
         else:
-            return self.enc_mu(h1)
+            return self.enc_mu(h1), None
 
 
 class Decoder(nn.Module):
@@ -48,9 +50,13 @@ class Decoder(nn.Module):
         if self.mode == 'VAE':
             self.dec_std = nn.Linear(dim, input_size)
 
+    @property
+    def output_size(self):
+        return self.dec_mu.out_features
+
     def forward(self, x):
         h1 = self.dec_seq(x)
         if self.mode == 'VAE':
             return self.dec_mu(h1), self.dec_std(h1)
         else:
-            return self.dec_mu(h1)
+            return self.dec_mu(h1), None

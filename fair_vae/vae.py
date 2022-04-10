@@ -1,22 +1,18 @@
 import numpy as np
-import pytorch_lightning as pl
 import torchmetrics
 from torch.distributions import Normal
-from torch.nn.functional import cross_entropy
 from torch.optim import Adam
-import torch.nn as nn
 from pytorch_lightning.core.lightning import LightningModule
+import pytorch_lightning as pl
 import torch
-from torch.nn import L1Loss, Module
+from torch.nn import L1Loss
 
 import warnings
 
-from torchtest import assert_vars_change
-
-from fair_vae.datamodule import DataTransformer, VAEDataModule
+from fair_vae.datamodule import DataTransformer, VAEDataModule, VAEData
 from fair_vae.losses import reconstruction_loss, kld_loss
 from fair_vae.modules import Encoder, Decoder
-from fair_vae.util import artifacts_path, pl_bar, set_wandb, MetricTracker
+from fair_vae.util import artifacts_path, pl_bar, MetricTracker
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from Fdatasets.real import Real
 import os
@@ -27,14 +23,15 @@ mse_loss = L1Loss()
 
 
 class VAE(LightningModule):
-    def __init__(self, input_size: int, embedding_dim=128, compress_dims=(128, 128), decompress_dims=(128, 128),
+    def __init__(self, x_data: VAEData, embedding_dim=128, compress_dims=(128, 128), decompress_dims=(128, 128),
                  loss_factor=2, l2scale=1e-5, cuda=True, transformer: DataTransformer = None, mode='AE', name='',
                  *args, **kwargs):
         super(VAE, self).__init__(*args, **kwargs)
-
         self.save_hyperparameters()
 
         assert mode in ['VAE', 'AE']
+
+        self.x_data = x_data
 
         self.name = name
 
@@ -46,9 +43,6 @@ class VAE(LightningModule):
         self.l2scale = l2scale
         self.transformer = transformer
 
-        if self.transformer is not None:
-            input_size = self.transformer.output_dimensions
-
         if not cuda or not torch.cuda.is_available():
             device = 'cpu'
         elif isinstance(cuda, str):
@@ -58,12 +52,10 @@ class VAE(LightningModule):
 
         self._device = torch.device(device)
 
-        self.encoder = Encoder(input_size, compress_dims, embedding_dim, mode=mode)
-        self.decoder = Decoder(input_size, compress_dims, embedding_dim, mode=mode)
+        self.encoder = Encoder(self.x_data.size, compress_dims, embedding_dim, mode=mode)
+        self.decoder = Decoder(self.x_data.size, compress_dims, embedding_dim, mode=mode)
 
-    def encode(self, x, use_transformer=False):
-        if use_transformer:
-            x = self.transformer.transform(x)
+    def encode(self, x):
         return self.encoder(x)
 
     def reparameterize(self, mu, logvar):
@@ -76,25 +68,32 @@ class VAE(LightningModule):
 
     def predict(self, x):
         if self.mode == 'AE':
-            mu = self.encode(x)
-            rec = self.decode(mu)
+            mu, _ = self.encode(x)
+            rec, _ = self.decode(mu)
             return dict(mu=mu, rec=rec)
         else:
             enc_mu, enc_logvar = self.encode(x)
             z, enc_std = self.reparameterize(enc_mu, enc_logvar)
             rec_mu, rec_logvar = self.decode(enc_mu)
             _, dec_std = self.reparameterize(rec_mu, rec_logvar)
+
+            if torch.isnan(enc_mu).any():
+                print("enc_logvar is nan", torch.isnan(enc_logvar).any())
+                # print("logvar is nan", torch.isnan(logvar).any())
+                # print("logvar.exp() is nan", torch.isnan(logvar.exp()).any())
+                raise Exception('mu is nan')
+
             return dict(mu=enc_mu, logvar=enc_logvar, enc_st=enc_std, rec=rec_mu, rec_std=dec_std, z=z)
 
     def loss_fn(self, pred_result, x, return_loss_comps=False):
 
         ## Recon loss ##
-        if self.transformer is not None:
+        if self.x_data.use_transformer:
             if self.mode == 'VAE':
-                recon_loss = reconstruction_loss(self.transformer, pred_result['rec'], x, pred_result['rec_std'],
+                recon_loss = reconstruction_loss(self.x_data.transformer, pred_result['rec'], x, pred_result['rec_std'],
                                                  self.loss_factor)
             else:
-                recon_loss = reconstruction_loss(self.transformer, pred_result['rec'], x)
+                recon_loss = reconstruction_loss(self.x_data.transformer, pred_result['rec'], x)
         else:
             recon_loss = self.loss_factor * mse_loss(pred_result['rec'], x)
 
@@ -148,10 +147,6 @@ class VAE(LightningModule):
         pred_result = self.forward(x)
 
         self.log(f"train_loss", pred_result['loss'], on_step=True, logger=True)
-        # self.log('recon_loss', pred_result['recon_loss'], on_step=True, logger=True)
-        # self.log('recon_metric', pred_result['recon_metric'], on_step=True, logger=True)
-        # self.log('kl_loss', pred_result['kl'], on_step=True, logger=True)
-        # self.log('log_lik_loss', pred_result['log_lik'], on_step=True, logger=True)
 
         logs = {"loss": pred_result['loss']}
 
@@ -184,20 +179,22 @@ class VAE(LightningModule):
     def configure_optimizers(self):
         return Adam(self.parameters(), weight_decay=self.l2scale)
 
+# if __name__ == '__main__':
 
 """
 Tests
 """
 # %% Data set
 db = Real.income()
+df = db.to_df()
 
 # %%
-
 from pytorch_lightning import Callback
 
+x = df[[col for col in df.columns if 'x' in col or 't' in col]]
+
 basic_model_config = {
-    'name': 'vae_leoleo',
-    'input_size': db.x.shape[1],
+    'name': 'ae',
     'latent_size': 128,
     'compress_dims': (128, 128),
     'decompress_dims': (128, 128),
@@ -213,13 +210,13 @@ basic_model_config = {
     'loss_factor': 2,
     'mode': 'AE',
     'use_transformer': True,
-    'data': db.x.to_numpy(),
+    'x_data': VAEData(data=db.x.to_numpy(), use_transformer=True),
     'patience': 40
 }
 
 
 def generate_test_case(model_config):
-    model_path = artifacts_path.joinpath('vae_leoleo')
+    model_path = artifacts_path.joinpath(model_config['name'])
 
     early_stop_callback = EarlyStopping(monitor="train_loss", min_delta=0.05, patience=100, verbose=False,
                                         mode="min")
@@ -231,62 +228,55 @@ def generate_test_case(model_config):
         mode="min",
     )
 
-    vae_data = VAEDataModule(db.x.to_numpy(), batch_size=model_config['batch_size'])
+    vae_data = VAEDataModule(model_config['x_data'], batch_size=model_config['batch_size'])
     vae_data.setup()
 
     cb_log = MetricTracker()
 
-    vae = VAE(input_size=model_config['input_size'], embedding_dim=model_config['latent_size'],
+    vae = VAE(x_data=model_config['x_data'], embedding_dim=model_config['latent_size'],
               compress_dims=model_config['compress_dims'], decompress_dims=model_config['decompress_dims'],
               loss_factor=model_config['loss_factor'], l2scale=model_config['weight_decay'],
-              mode=model_config['mode'])
+              mode=model_config['mode'], transformer=model_config['x_data'].transformer)
 
     callbacks = [checkpoint_callback, pl_bar, early_stop_callback, cb_log]
 
     return vae, vae_data, callbacks
 
 
-# test
-vae, vae_data, callbacks = generate_test_case(basic_model_config)
-
 # %%
+if __name__ == '__main__':
+    import matplotlib.pyplot as plt
 
-# AE converges
-import matplotlib.pyplot as plt
+    basic_model_config['epochs'] = 100
+    basic_model_config['batch_size'] = 500
 
-basic_model_config['epochs'] = 100
-basic_model_config['batch_size'] = 500
+    vae, vae_data, callbacks = generate_test_case(basic_model_config)
+    # logger = set_wandb(basic_model_config, project='leoleo', job_type='vae_leoleo')
 
-vae, vae_data, callbacks = generate_test_case(basic_model_config)
-# logger = set_wandb(basic_model_config, project='leoleo', job_type='vae_leoleo')
+    trainer = pl.Trainer(max_epochs=basic_model_config['epochs'], log_every_n_steps=8,
+                         callbacks=callbacks)
 
-trainer = pl.Trainer(max_epochs=basic_model_config['epochs'], log_every_n_steps=8,
-                     callbacks=callbacks)
+    start_test_loss_log = trainer.test(vae, vae_data)
+    log_train = trainer.fit(vae, vae_data)
+    end_test_loss_log = trainer.test(vae, vae_data)
 
-start_test_loss_log = trainer.test(vae, vae_data)
-log_train = trainer.fit(vae, vae_data)
-end_test_loss_log = trainer.test(vae, vae_data)
+    # diff_loss = start_test_loss_log[0]['test_loss'] - end_test_loss_log[0]['test_loss']
+    callbacks[3].plot('loss')
 
-# diff_loss = start_test_loss_log[0]['test_loss'] - end_test_loss_log[0]['test_loss']
-callbacks[3].plot('loss')
-# plt.plot(loss_values)
+    #%%VAE converges
 
-# %%
-# VAE converges
+    basic_model_config['mode'] = 'VAE'
+    basic_model_config['name'] = 'vae'
+    basic_model_config['epochs'] = 50
+    basic_model_config['batch_size'] = 500
+    vae, vae_data, callbacks = generate_test_case(basic_model_config)
 
-basic_model_config['mode'] = 'VAE'
-basic_model_config['epochs'] = 100
-basic_model_config['batch_size'] = 500
-vae, vae_data, callbacks = generate_test_case(basic_model_config)
+    trainer = pl.Trainer(max_epochs=basic_model_config['epochs'], log_every_n_steps=8,
+                         callbacks=callbacks)
 
-logger = set_wandb(basic_model_config, project='leoleo', job_type='vae_leoleo')
+    start_test_loss = trainer.test(vae, vae_data)[0]
+    trainer.fit(vae, vae_data)
 
-trainer = pl.Trainer(max_epochs=basic_model_config['epochs'], log_every_n_steps=8,
-                     callbacks=callbacks, logger=logger)
+    end_test_loss = trainer.test(vae, vae_data)[0]
 
-start_test_loss = trainer.test(vae, vae_data)[0]
-trainer.fit(vae, vae_data)
 
-end_test_loss = trainer.test(vae, vae_data)[0]
-
-# assert start_test_loss['test_loss'] - end_test_loss['test_loss'] > 0
