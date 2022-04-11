@@ -1,16 +1,16 @@
 from setuptools import setup
 
 setup(name='fair_vae',
-      version='0.3.0',
-      description='Evidential Deep learning implementation Pytorch',
+      version='0.1.0',
+      description='Fair VAE for decoupling protected attributes from non protected attributes',
       url='https://github.com/Tuttusa/FairVAE',
       author='Vaunorage',
       author_email='vaunorage@tuttusa.io',
       license='MIT',
       packages=['fair_vae'],
       install_requires=[
-          "pandas==1.4.2",
-          "numpy==1.22.3",
+          "pandas==1.3.5",
+          "numpy==1.21.1",
           "torch==1.11.0",
           "pytorch-lightning==1.6.0",
           "pydantic==1.9.0",
