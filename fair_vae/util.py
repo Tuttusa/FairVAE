@@ -1,3 +1,6 @@
+from typing import Tuple, Literal
+
+from pydantic import BaseModel
 from pytorch_lightning import Callback
 from pytorch_lightning.callbacks import ProgressBar
 from tqdm import tqdm
@@ -8,6 +11,8 @@ import seaborn as sns
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+
+from fair_vae.datamodule import VAEData
 
 
 class LitProgressBar(ProgressBar):
@@ -60,3 +65,27 @@ class MetricTracker(Callback):
                            item: np.array(self.collection[item])})
         sns.lineplot(data=df, x='step', y=item)
         plt.show()
+
+
+class AEConfig(BaseModel):
+    name: str = 'ae'
+    embedding_dim: int = 128
+    compress_dims: Tuple[int] = (128, 128)
+    decompress_dims: Tuple[int] = (128, 128)
+    num_resamples: int = 8
+    device: Literal['cpu', 'gpu'] = 'cpu'
+    lr: float = 1e-4
+    batch_size: int = 500
+    epochs: int = 100
+    no_progress_bar: bool = False
+    steps_log_loss: int = 10
+    steps_log_norm_params: int = 10
+    weight_decay: float = 1e-5
+    loss_factor: int = 2
+    l2scale: float = 1e-5
+    mode: Literal['AE', 'VAE'] = 'AE'
+    use_transformer: bool = True
+    x_data: VAEData
+    t_data: VAEData = None
+    y_data: VAEData = None
+    patience: int = 40

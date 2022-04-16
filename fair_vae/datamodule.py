@@ -246,31 +246,22 @@ class VAEData(BaseModel):
 
     data: typing.Any
     discrete_columns: tuple = []
-    use_transformer: bool = False
-    transformer: typing.Optional[DataTransformer] = DataTransformer()
-
-    @property
-    def size(self):
-        if self.use_transformer:
-            return self.transformer.output_dimensions
-        return self.data.shape[1]
 
 
 class VAEDataModule(pl.LightningDataModule):
-    def __init__(self, x_data: VAEData, t_data: VAEData = None, y_data: VAEData = None, discrete_columns=tuple(),
-                 batch_size: int = 500, shuffle=True,
-                 use_transform=False,
-                 test_rate=0.33, val_rate=0.05):
+    def __init__(self, x_data: VAEData, t_data: VAEData = None, y_data: VAEData = None, batch_size=500, shuffle=True,
+                 transform=False, test_rate=0.33, val_rate=0.05):
         super().__init__()
         self.batch_size = batch_size
         self.shuffle = shuffle
 
-        self.x_data = x_data
-        self.t_data = t_data
-        self.y_data = y_data
+        self.data = {
+            'x': x_data,
+            't': t_data,
+            'y': y_data
+        }
 
-        self.discrete_columns = discrete_columns
-        self.use_transform = use_transform
+        self.use_transformer = transform
 
         self.transformer = {
             "x": DataTransformer(),
@@ -281,15 +272,20 @@ class VAEDataModule(pl.LightningDataModule):
         self.test_rate = test_rate
         self.val_rate = val_rate
 
-    def _setup(self, data_config: VAEData):
+        self._all_setup()
 
-        data = data_config.data
+    def shape(self, elem):
+        if self.use_transformer:
+            return self.transformer[elem].output_dimensions
+        return self.data[elem].data.shape[1]
 
-        if data_config.use_transformer:
-            data_config.transformer.fit(data, data_config.discrete_columns)
-            data = data_config.transformer.transform(data)
+    def _setup(self, data_config: VAEData, d_type: str):
 
-        train_data, test_data = train_test_split(data, test_size=self.test_rate)
+        if self.use_transformer:
+            self.transformer[d_type].fit(data_config.data, data_config.discrete_columns)
+            data_config.data = self.transformer[d_type].transform(data_config.data)
+
+        train_data, test_data = train_test_split(data_config.data, test_size=self.test_rate)
         test_data, val_data = train_test_split(test_data, test_size=self.val_rate)
 
         train_data = torch.from_numpy(train_data.astype('float32'))
@@ -298,23 +294,23 @@ class VAEDataModule(pl.LightningDataModule):
 
         return train_data, test_data, val_data
 
-    def setup(self, **kwargs):
+    def _all_setup(self):
 
-        x_train_data, x_test_data, x_val_data = self._setup(self.x_data)
+        x_train_data, x_test_data, x_val_data = self._setup(self.data['x'], 'x')
 
         train_data = [x_train_data]
         val_data = [x_val_data]
         test_data = [x_test_data]
 
-        if self.t_data is not None:
-            t_train_data, t_test_data, t_val_data = self._setup(self.t_data)
+        if self.data['t'] is not None:
+            t_train_data, t_test_data, t_val_data = self._setup(self.data['t'], 't')
 
             train_data.append(t_train_data)
             test_data.append(t_test_data)
             val_data.append(t_val_data)
 
-        if self.y_data is not None:
-            y_train_data, y_test_data, y_val_data = self._setup(self.y_data)
+        if self.data['y'] is not None:
+            y_train_data, y_test_data, y_val_data = self._setup(self.data['y'], 'y')
 
             train_data.append(y_train_data)
             test_data.append(y_test_data)

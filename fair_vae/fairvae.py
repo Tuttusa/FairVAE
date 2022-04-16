@@ -1,5 +1,3 @@
-from typing import Optional
-
 import torch
 import torch.nn as nn
 import torchmetrics
@@ -9,47 +7,43 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from torch.nn.functional import mse_loss
 from torch.optim import Adam
 
-from fair_vae.datamodule import DataTransformer, VAEDataModule, VAEData
+from fair_vae.datamodule import VAEDataModule, VAEData
 from fair_vae.losses import reconstruction_loss, kld_loss, MMD
 from fair_vae.modules import Encoder, Decoder
 
 import pytorch_lightning as pl
 
-from fair_vae.util import artifacts_path, MetricTracker, pl_bar
+from fair_vae.util import artifacts_path, MetricTracker, pl_bar, AEConfig
 
 
 class FVAE(LightningModule):
-    def __init__(self, x_size, t_size, y_size, embedding_dim, compress_dims, decompress_dims,
-                 mode, loss_factor=2, l2scale=1e-5, transformer_x=None, transformer_t=None, transformer_y=None,
-                 *args, **kwargs):
+    def __init__(self, ae_config: AEConfig, *args, **kwargs):
         super(FVAE, self).__init__(*args, **kwargs)
 
         self.save_hyperparameters()
 
-        assert mode in ['VAE', 'AE']
+        self.config = ae_config
 
-        self.mode = mode
+        self.vae_data = VAEDataModule(x_data=self.config.x_data, t_data=self.config.t_data, y_data=self.config.y_data,
+                                 batch_size=self.config.batch_size, transform=self.config.use_transformer)
 
-        self.loss_factor = loss_factor
-        self.l2scale = l2scale
+        encoder1_inp_size = self.vae_data.shape('x') + self.vae_data.shape('t')
+        self.encoder1 = Encoder(encoder1_inp_size, self.config.compress_dims, self.config.embedding_dim,
+                                self.config.mode)  # q(z1 | t, x)
 
-        self.transformer_x = transformer_x
-        self.transformer_t = transformer_t
-        self.transformer_y = transformer_y
+        encoder2_inp_size = self.encoder1.output_size + self.vae_data.shape('y')
+        self.encoder2 = Encoder(encoder2_inp_size, self.config.compress_dims, self.config.embedding_dim,
+                                self.config.mode)  # q(z2 | y, z1)
 
-        encoder1_inp_size = x_size + t_size
-        self.encoder1 = Encoder(encoder1_inp_size, compress_dims, embedding_dim, mode)  # q(z1 | t, x)
+        self.y_learner = nn.Linear(self.encoder1.output_size, self.vae_data.shape('y'))  # p(y | z1)
 
-        encoder2_inp_size = self.encoder1.output_size + y_size
-        self.encoder2 = Encoder(encoder2_inp_size, compress_dims, embedding_dim, mode)  # q(z2 | y, z1)
+        decoder1_inp_size = self.encoder2.output_size + self.vae_data.shape('y')
+        self.decoder1 = Decoder(self.encoder1.output_size, self.config.decompress_dims, decoder1_inp_size,
+                                self.config.mode)  # p(z1 | z2, y)
 
-        self.y_learner = nn.Linear(self.encoder1.output_size, y_size)  # p(y | z1)
-
-        decoder1_inp_size = self.encoder2.output_size + y_size
-        self.decoder1 = Decoder(self.encoder1.output_size, decompress_dims, decoder1_inp_size, mode)  # p(z1 | z2, y)
-
-        decoder2_inp_size = self.decoder1.output_size + t_size
-        self.decoder2 = Decoder(x_size, decompress_dims, decoder2_inp_size, mode)  # p(x | z1, t)
+        decoder2_inp_size = self.decoder1.output_size + self.vae_data.shape('t')
+        self.decoder2 = Decoder(self.vae_data.shape('x'), self.config.decompress_dims, decoder2_inp_size,
+                                self.config.mode)  # p(x | z1, t)
 
     def encode(self, x, t, y):
         z1 = self.encoder1(torch.cat([x, t], dim=-1))
@@ -81,7 +75,7 @@ class FVAE(LightningModule):
 
         (rec_z1_mu, rec_z1_logvar), (rec_x_mu, rec_x_logvar) = self.decode(z2_mu, t, y)
 
-        if self.mode == 'VAE':
+        if self.config.mode == 'VAE':
             _, dec_z1_std = self.reparameterize(rec_z1_mu, rec_z1_logvar)
             _, dec_x_std = self.reparameterize(rec_x_mu, rec_x_logvar)
         else:
@@ -95,11 +89,11 @@ class FVAE(LightningModule):
     def recon_loss(self, rec_mu, ori, rec_std=None, transformer=None):
         if transformer is not None:
             if rec_std is not None:
-                recon_loss = reconstruction_loss(transformer, rec_mu, ori, rec_std, self.loss_factor)
+                recon_loss = reconstruction_loss(transformer, rec_mu, ori, rec_std, self.confi.loss_factor)
             else:
                 recon_loss = reconstruction_loss(transformer, rec_mu, ori)
         else:
-            recon_loss = self.loss_factor * mse_loss(rec_mu, ori)
+            recon_loss = self.config.loss_factor * mse_loss(rec_mu, ori)
 
         return recon_loss
 
@@ -117,7 +111,7 @@ class FVAE(LightningModule):
 
         ## rec loss x
 
-        rec_loss_x = self.recon_loss(pred['rec_x_mu'], pred['x'], pred.get('rec_x_std', None), self.transformer_x)
+        rec_loss_x = self.recon_loss(pred['rec_x_mu'], pred['x'], pred.get('rec_x_std', None), self.vae_data.transformer['x'])
 
         ## rec loss z1
 
@@ -125,11 +119,11 @@ class FVAE(LightningModule):
 
         ## rec loss Y
 
-        rec_loss_y = self.recon_loss(pred['rec_y'], pred['y'], transformer=self.transformer_y)
+        rec_loss_y = self.recon_loss(pred['rec_y'], pred['y'], transformer=self.vae_data.transformer['y'])
 
         total_rec_loss = rec_loss_x + rec_loss_z1 + rec_loss_y
 
-        if self.mode == 'VAE':
+        if self.config.mode == 'VAE':
             ## kl loss z1
 
             kl_z1_loss = kld_loss(pred['z1_mu'], pred['z1_logvar'])
@@ -194,42 +188,14 @@ class FVAE(LightningModule):
         return {"loss": loss}
 
     def configure_optimizers(self):
-        return Adam(self.parameters(), weight_decay=self.l2scale)
+        return Adam(self.parameters(), weight_decay=self.config.l2scale)
 
+    def fit(self, epochs, batch_size):
 
-# %%
-if __name__ == '__main__':
-    db = Real.income()
+        self.config.epochs = epochs
+        self.config.batch_size = batch_size
 
-    # %%
-
-    model_config = {
-        'name': 'f_ae',
-        'latent_size': 128,
-        'compress_dims': (128, 128),
-        'decompress_dims': (128, 128),
-        'num_resamples': 8,
-        'device': 'cpu',
-        'lr': 1e-4,
-        'batch_size': 100,
-        'epochs': 40,
-        'no_progress_bar': False,
-        'steps_log_loss': 10,
-        'steps_log_norm_params': 10,
-        'weight_decay': 1e-5,
-        'loss_factor': 2,
-        'mode': 'AE',
-        'use_transformer': True,
-        'x_data': VAEData(data=db.x.to_numpy(), use_transformer=True),
-        't_data': VAEData(data=db.t.to_numpy(), use_transformer=True),
-        'y_data': VAEData(data=db.y.to_numpy(), use_transformer=True),
-        'patience': 40
-    }
-
-
-    def generate_test_case(model_config):
-
-        model_path = artifacts_path.joinpath('fvae')
+        model_path = artifacts_path.joinpath(self.config.name)
 
         early_stop_callback = EarlyStopping(monitor="train_loss", min_delta=0.05, patience=100, verbose=False,
                                             mode="min")
@@ -237,57 +203,128 @@ if __name__ == '__main__':
         checkpoint_callback = ModelCheckpoint(
             monitor="val_loss",
             dirpath=model_path,
-            filename=model_config['name'] + "-{epoch:02d}-{val_loss:.2f}",
+            filename=self.config.name + "-{epoch:02d}-{val_loss:.2f}",
             save_top_k=3,
             mode="min",
         )
 
-        vae_data = VAEDataModule(x_data=model_config['x_data'],
-                                 t_data=model_config['t_data'],
-                                 y_data=model_config['y_data'],
-                                 batch_size=model_config['batch_size'])
-        vae_data.setup()
-
         cb_log = MetricTracker()
-
-        vae = FVAE(x_size=model_config['x_data'].size, t_size=model_config['t_data'].size,
-                   y_size=model_config['y_data'].size, embedding_dim=model_config['latent_size'],
-                   compress_dims=model_config['compress_dims'], decompress_dims=model_config['decompress_dims'],
-                   loss_factor=model_config['loss_factor'], l2scale=model_config['weight_decay'],
-                   mode=model_config['mode'], transformer_x=model_config['x_data'].transformer,
-                   transformer_t=model_config['t_data'].transformer, transformer_y=model_config['y_data'].transformer)
 
         callbacks = [checkpoint_callback, pl_bar, early_stop_callback, cb_log]
 
-        return vae, vae_data, callbacks
+        trainer = pl.Trainer(max_epochs=self.config.epochs, log_every_n_steps=8, callbacks=callbacks)
 
+        start_test_loss_log = trainer.test(self, self.vae_data)
+        log_train = trainer.fit(self, self.vae_data)
+        end_test_loss_log = trainer.test(self, self.vae_data)
 
-# %%
-    vae, vae_data, callbacks = generate_test_case(model_config)
+        # diff_loss = start_test_loss_log[0]['test_loss'] - end_test_loss_log[0]['test_loss']
+        callbacks[3].plot('loss')
 
-    trainer = pl.Trainer(max_epochs=model_config['epochs'], log_every_n_steps=8,
-                         callbacks=callbacks)
+# %% Data set
+# db = Real.income()
+# df = db.to_df()
+#
+# # %%
+# config = AEConfig(name='f_ae', x_data=VAEData(data=db.x.to_numpy()), t_data=VAEData(data=db.t.to_numpy()),
+#                   y_data=VAEData(data=db.y.to_numpy()))
+# fae = FVAE(config)
+# fae.fit(epochs=100, batch_size=500)
+#
+# #%%
+# config = AEConfig(x_data=VAEData(data=db.x.to_numpy()), t_data=VAEData(data=db.t.to_numpy()),
+#                   y_data=VAEData(data=db.y.to_numpy()), name='f_vae', mode='VAE')
+# fvae = FVAE(config)
+# fvae.fit(epochs=50, batch_size=500)
 
-    start_test_loss_log = trainer.test(vae, vae_data)
-    log_train = trainer.fit(vae, vae_data)
-    end_test_loss_log = trainer.test(vae, vae_data)
-
-    # diff_loss = start_test_loss_log[0]['test_loss'] - end_test_loss_log[0]['test_loss']
-    callbacks[3].plot('loss')
-
-    #%%
-    model_config['mode'] = 'VAE'
-    model_config['name'] = 'f_vae'
-    model_config['epochs'] = 10
-    model_config['batch_size'] = 500
-    vae, vae_data, callbacks = generate_test_case(model_config)
-
-    trainer = pl.Trainer(max_epochs=model_config['epochs'], log_every_n_steps=8,
-                         callbacks=callbacks)
-
-    start_test_loss_log = trainer.test(vae, vae_data)
-    log_train = trainer.fit(vae, vae_data)
-    end_test_loss_log = trainer.test(vae, vae_data)
-
-    # diff_loss = start_test_loss_log[0]['test_loss'] - end_test_loss_log[0]['test_loss']
-    callbacks[3].plot('loss')
+# if __name__ == '__main__':
+#     db = Real.income()
+#
+#     # %%
+#
+#     model_config = {
+#         'name': 'f_ae',
+#         'latent_size': 128,
+#         'compress_dims': (128, 128),
+#         'decompress_dims': (128, 128),
+#         'num_resamples': 8,
+#         'device': 'cpu',
+#         'lr': 1e-4,
+#         'batch_size': 100,
+#         'epochs': 40,
+#         'no_progress_bar': False,
+#         'steps_log_loss': 10,
+#         'steps_log_norm_params': 10,
+#         'weight_decay': 1e-5,
+#         'loss_factor': 2,
+#         'mode': 'AE',
+#         'use_transformer': True,
+#         'x_data': VAEData(data=db.x.to_numpy(), use_transformer=True),
+#         't_data': VAEData(data=db.t.to_numpy(), use_transformer=True),
+#         'y_data': VAEData(data=db.y.to_numpy(), use_transformer=True),
+#         'patience': 40
+#     }
+#
+#
+#     def generate_test_case(model_config):
+#         model_path = artifacts_path.joinpath('fvae')
+#
+#         early_stop_callback = EarlyStopping(monitor="train_loss", min_delta=0.05, patience=100, verbose=False,
+#                                             mode="min")
+#
+#         checkpoint_callback = ModelCheckpoint(
+#             monitor="val_loss",
+#             dirpath=model_path,
+#             filename=model_config['name'] + "-{epoch:02d}-{val_loss:.2f}",
+#             save_top_k=3,
+#             mode="min",
+#         )
+#
+#         vae_data = VAEDataModule(x_data=model_config['x_data'],
+#                                  t_data=model_config['t_data'],
+#                                  y_data=model_config['y_data'],
+#                                  batch_size=model_config['batch_size'])
+#         vae_data.setup()
+#
+#         cb_log = MetricTracker()
+#
+#         vae = FVAE(x_size=model_config['x_data'].size, t_size=model_config['t_data'].size,
+#                    y_size=model_config['y_data'].size, embedding_dim=model_config['latent_size'],
+#                    compress_dims=model_config['compress_dims'], decompress_dims=model_config['decompress_dims'],
+#                    loss_factor=model_config['loss_factor'], l2scale=model_config['weight_decay'],
+#                    mode=model_config['mode'], transformer_x=model_config['x_data'].transformer,
+#                    transformer_t=model_config['t_data'].transformer, transformer_y=model_config['y_data'].transformer)
+#
+#         callbacks = [checkpoint_callback, pl_bar, early_stop_callback, cb_log]
+#
+#         return vae, vae_data, callbacks
+#
+#
+#     vae, vae_data, callbacks = generate_test_case(model_config)
+#
+#     trainer = pl.Trainer(max_epochs=model_config['epochs'], log_every_n_steps=8,
+#                          callbacks=callbacks)
+#
+#     start_test_loss_log = trainer.test(vae, vae_data)
+#     log_train = trainer.fit(vae, vae_data)
+#     end_test_loss_log = trainer.test(vae, vae_data)
+#
+#     # diff_loss = start_test_loss_log[0]['test_loss'] - end_test_loss_log[0]['test_loss']
+#     callbacks[3].plot('loss')
+#
+#     # %%
+#     model_config['mode'] = 'VAE'
+#     model_config['name'] = 'f_vae'
+#     model_config['epochs'] = 10
+#     model_config['batch_size'] = 500
+#     vae, vae_data, callbacks = generate_test_case(model_config)
+#
+#     trainer = pl.Trainer(max_epochs=model_config['epochs'], log_every_n_steps=8,
+#                          callbacks=callbacks)
+#
+#     start_test_loss_log = trainer.test(vae, vae_data)
+#     log_train = trainer.fit(vae, vae_data)
+#     end_test_loss_log = trainer.test(vae, vae_data)
+#
+#     # diff_loss = start_test_loss_log[0]['test_loss'] - end_test_loss_log[0]['test_loss']
+#     callbacks[3].plot('loss')
