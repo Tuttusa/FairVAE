@@ -12,7 +12,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-from fair_vae.datamodule import VAEData
+from fair_vae.datamodule import DataConfig
 
 
 class LitProgressBar(ProgressBar):
@@ -85,7 +85,7 @@ class AEConfig(BaseModel):
     l2scale: float = 1e-5
     mode: Literal['AE', 'VAE'] = 'AE'
     use_transformer: bool = True
-    x_data: VAEData
-    t_data: VAEData = None
-    y_data: VAEData = None
+    x_data: DataConfig
+    t_data: DataConfig = None
+    y_data: DataConfig = None
     patience: int = 40

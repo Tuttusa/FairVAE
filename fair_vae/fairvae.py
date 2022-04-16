@@ -7,7 +7,7 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from torch.nn.functional import mse_loss
 from torch.optim import Adam
 
-from fair_vae.datamodule import VAEDataModule, VAEData
+from fair_vae.datamodule import VAEDataModule, DataConfig
 from fair_vae.losses import reconstruction_loss, kld_loss, MMD
 from fair_vae.modules import Encoder, Decoder
 
