@@ -240,7 +240,7 @@ class DataTransformer(object):
         }
 
 
-class DataConfig(BaseModel):
+class FDataConfig(BaseModel):
     class Config:
         arbitrary_types_allowed = True
 
@@ -249,7 +249,7 @@ class DataConfig(BaseModel):
 
 
 class VAEDataModule(pl.LightningDataModule):
-    def __init__(self, x_data: DataConfig, t_data: DataConfig = None, y_data: DataConfig = None, batch_size=500, shuffle=True,
+    def __init__(self, x_data: FDataConfig, t_data: FDataConfig = None, y_data: FDataConfig = None, batch_size=500, shuffle=True,
                  transform=False, test_rate=0.33, val_rate=0.05):
         super().__init__()
         self.batch_size = batch_size
@@ -279,7 +279,7 @@ class VAEDataModule(pl.LightningDataModule):
             return self.transformer[elem].output_dimensions
         return self.data[elem].data.shape[1]
 
-    def _setup(self, data_config: DataConfig, d_type: str):
+    def _setup(self, data_config: FDataConfig, d_type: str):
 
         if self.use_transformer:
             self.transformer[d_type].fit(data_config.data, data_config.discrete_columns)

@@ -13,7 +13,7 @@ from torch.nn import L1Loss
 
 import warnings
 
-from fair_vae.datamodule import VAEDataModule, DataConfig
+from fair_vae.datamodule import VAEDataModule, FDataConfig
 from fair_vae.losses import reconstruction_loss, kld_loss
 from fair_vae.modules import Encoder, Decoder
 from fair_vae.util import artifacts_path, pl_bar, MetricTracker, AEConfig
