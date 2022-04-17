@@ -1,16 +1,18 @@
-import typing
-from typing import Any, Optional
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
-from pydantic import BaseModel
-from sklearn.model_selection import train_test_split
 import torch
+import warnings
+from typing import Optional
+
+from fair_vae.configs import AEConfig
+from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 from collections import namedtuple
 from rdt.transformers.categorical import OneHotEncodingTransformer
 from sklearn.mixture import BayesianGaussianMixture
-import warnings
+
+from Fdatasets.dataset import Dataset
 
 warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning)
 
@@ -240,28 +242,15 @@ class DataTransformer(object):
         }
 
 
-class FDataConfig(BaseModel):
-    class Config:
-        arbitrary_types_allowed = True
-
-    data: typing.Any
-    discrete_columns: tuple = []
-
-
 class VAEDataModule(pl.LightningDataModule):
-    def __init__(self, x_data: FDataConfig, t_data: FDataConfig = None, y_data: FDataConfig = None, batch_size=500, shuffle=True,
-                 transform=False, test_rate=0.33, val_rate=0.05):
+    def __init__(self, config: AEConfig, data: Dataset):
         super().__init__()
-        self.batch_size = batch_size
-        self.shuffle = shuffle
+        self.batch_size = config.batch_size
+        self.shuffle = config.shuffle_data
 
-        self.data = {
-            'x': x_data,
-            't': t_data,
-            'y': y_data
-        }
+        self.data = data
 
-        self.use_transformer = transform
+        self.use_transformer = config.use_transformer
 
         self.transformer = {
             "x": DataTransformer(),
@@ -269,8 +258,8 @@ class VAEDataModule(pl.LightningDataModule):
             "y": DataTransformer()
         }
 
-        self.test_rate = test_rate
-        self.val_rate = val_rate
+        self.test_rate = config.data_test_rate
+        self.val_rate = config.data_val_rate
 
         self._all_setup()
 
@@ -279,13 +268,15 @@ class VAEDataModule(pl.LightningDataModule):
             return self.transformer[elem].output_dimensions
         return self.data[elem].data.shape[1]
 
-    def _setup(self, data_config: FDataConfig, d_type: str):
+    def _setup(self, data: Dataset, d_type: str):
 
         if self.use_transformer:
-            self.transformer[d_type].fit(data_config.data, data_config.discrete_columns)
-            data_config.data = self.transformer[d_type].transform(data_config.data)
+            self.transformer[d_type].fit(data[d_type], data.vars_nature(d_type, categ=False))
+            np_data = self.transformer[d_type].transform(data[d_type])
+        else:
+            np_data = data[d_type]
 
-        train_data, test_data = train_test_split(data_config.data, test_size=self.test_rate)
+        train_data, test_data = train_test_split(np_data, test_size=self.test_rate)
         test_data, val_data = train_test_split(test_data, test_size=self.val_rate)
 
         train_data = torch.from_numpy(train_data.astype('float32'))
@@ -296,21 +287,21 @@ class VAEDataModule(pl.LightningDataModule):
 
     def _all_setup(self):
 
-        x_train_data, x_test_data, x_val_data = self._setup(self.data['x'], 'x')
+        x_train_data, x_test_data, x_val_data = self._setup(self.data, 'x')
 
         train_data = [x_train_data]
         val_data = [x_val_data]
         test_data = [x_test_data]
 
-        if self.data['t'] is not None:
-            t_train_data, t_test_data, t_val_data = self._setup(self.data['t'], 't')
+        if self.data.t is not None:
+            t_train_data, t_test_data, t_val_data = self._setup(self.data, 't')
 
             train_data.append(t_train_data)
             test_data.append(t_test_data)
             val_data.append(t_val_data)
 
-        if self.data['y'] is not None:
-            y_train_data, y_test_data, y_val_data = self._setup(self.data['y'], 'y')
+        if self.data.y is not None:
+            y_train_data, y_test_data, y_val_data = self._setup(self.data, 'y')
 
             train_data.append(y_train_data)
             test_data.append(y_test_data)

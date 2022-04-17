@@ -7,42 +7,38 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from torch.nn.functional import mse_loss
 from torch.optim import Adam
 
-from fair_vae.datamodule import VAEDataModule, FDataConfig
+from fair_vae.configs import AEConfig
 from fair_vae.losses import reconstruction_loss, kld_loss, MMD
-from fair_vae.modules import Encoder, Decoder
+from fair_vae.models.interface import VAEFrame
+from fair_vae.models.modules import Encoder, Decoder
 
 import pytorch_lightning as pl
 
-from fair_vae.util import artifacts_path, MetricTracker, pl_bar, AEConfig
+from fair_vae.util import artifacts_path, MetricTracker, pl_bar
 
 
-class FVAE(LightningModule):
+class FVAE(VAEFrame):
+    model_impl = 'FVAE'
+
     def __init__(self, ae_config: AEConfig, *args, **kwargs):
-        super(FVAE, self).__init__(*args, **kwargs)
+        super(FVAE, self).__init__(ae_config, *args, **kwargs)
 
-        self.save_hyperparameters()
-
-        self.config = ae_config
-
-        self.vae_data = VAEDataModule(x_data=self.config.x_data, t_data=self.config.t_data, y_data=self.config.y_data,
-                                 batch_size=self.config.batch_size, transform=self.config.use_transformer)
-
-        encoder1_inp_size = self.vae_data.shape('x') + self.vae_data.shape('t')
+        encoder1_inp_size = self.config.x_data_shape + self.config.t_data_shape
         self.encoder1 = Encoder(encoder1_inp_size, self.config.compress_dims, self.config.embedding_dim,
                                 self.config.mode)  # q(z1 | t, x)
 
-        encoder2_inp_size = self.encoder1.output_size + self.vae_data.shape('y')
+        encoder2_inp_size = self.encoder1.output_size + self.config.y_data_shape
         self.encoder2 = Encoder(encoder2_inp_size, self.config.compress_dims, self.config.embedding_dim,
                                 self.config.mode)  # q(z2 | y, z1)
 
-        self.y_learner = nn.Linear(self.encoder1.output_size, self.vae_data.shape('y'))  # p(y | z1)
+        self.y_learner = nn.Linear(self.encoder1.output_size, self.config.y_data_shape)  # p(y | z1)
 
-        decoder1_inp_size = self.encoder2.output_size + self.vae_data.shape('y')
+        decoder1_inp_size = self.encoder2.output_size + self.config.y_data_shape
         self.decoder1 = Decoder(self.encoder1.output_size, self.config.decompress_dims, decoder1_inp_size,
                                 self.config.mode)  # p(z1 | z2, y)
 
-        decoder2_inp_size = self.decoder1.output_size + self.vae_data.shape('t')
-        self.decoder2 = Decoder(self.vae_data.shape('x'), self.config.decompress_dims, decoder2_inp_size,
+        decoder2_inp_size = self.decoder1.output_size + self.config.t_data_shape
+        self.decoder2 = Decoder(self.config.x_data_shape, self.config.decompress_dims, decoder2_inp_size,
                                 self.config.mode)  # p(x | z1, t)
 
     def encode(self, x, t, y):
@@ -111,7 +107,8 @@ class FVAE(LightningModule):
 
         ## rec loss x
 
-        rec_loss_x = self.recon_loss(pred['rec_x_mu'], pred['x'], pred.get('rec_x_std', None), self.vae_data.transformer['x'])
+        rec_loss_x = self.recon_loss(pred['rec_x_mu'], pred['x'], pred.get('rec_x_std', None),
+                                     self.transformer['x'])
 
         ## rec loss z1
 
@@ -119,7 +116,7 @@ class FVAE(LightningModule):
 
         ## rec loss Y
 
-        rec_loss_y = self.recon_loss(pred['rec_y'], pred['y'], transformer=self.vae_data.transformer['y'])
+        rec_loss_y = self.recon_loss(pred['rec_y'], pred['y'], transformer=self.transformer['y'])
 
         total_rec_loss = rec_loss_x + rec_loss_z1 + rec_loss_y
 
@@ -190,36 +187,22 @@ class FVAE(LightningModule):
     def configure_optimizers(self):
         return Adam(self.parameters(), weight_decay=self.config.l2scale)
 
-    def fit(self, epochs, batch_size):
+    def fit(self, vae_data):
 
-        self.config.epochs = epochs
-        self.config.batch_size = batch_size
+        self.transformer = vae_data.transformer
 
-        model_path = artifacts_path.joinpath(self.config.name)
+        model_path = artifacts_path.joinpath(self.model_impl)
 
-        early_stop_callback = EarlyStopping(monitor="train_loss", min_delta=0.05, patience=100, verbose=False,
-                                            mode="min")
-
-        checkpoint_callback = ModelCheckpoint(
-            monitor="val_loss",
-            dirpath=model_path,
-            filename=self.config.name + "-{epoch:02d}-{val_loss:.2f}",
-            save_top_k=3,
-            mode="min",
-        )
-
-        cb_log = MetricTracker()
-
-        callbacks = [checkpoint_callback, pl_bar, early_stop_callback, cb_log]
+        callbacks = self.callbacks(model_path)
 
         trainer = pl.Trainer(max_epochs=self.config.epochs, log_every_n_steps=8, callbacks=callbacks)
 
-        start_test_loss_log = trainer.test(self, self.vae_data)
-        log_train = trainer.fit(self, self.vae_data)
-        end_test_loss_log = trainer.test(self, self.vae_data)
+        start_test_loss_log = trainer.test(self, vae_data)
+        log_train = trainer.fit(self, vae_data)
+        end_test_loss_log = trainer.test(self, vae_data)
 
         # diff_loss = start_test_loss_log[0]['test_loss'] - end_test_loss_log[0]['test_loss']
-        callbacks[3].plot('loss')
+        callbacks[2].plot('loss')
 
 # %% Data set
 # db = Real.income()

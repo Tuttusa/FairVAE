@@ -1,7 +1,6 @@
 import torch.nn as nn
 
 
-
 class Encoder(nn.Module):
     def __init__(self, input_size, compress_dims, embedding_dim, mode='AE'):
         super().__init__()

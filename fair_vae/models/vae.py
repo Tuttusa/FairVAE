@@ -1,22 +1,17 @@
-import typing
-from typing import Tuple, Literal
-
 import numpy as np
 import torchmetrics
-from pydantic import BaseModel
-from torch.distributions import Normal
 from torch.optim import Adam
-from pytorch_lightning.core.lightning import LightningModule
 import pytorch_lightning as pl
 import torch
 from torch.nn import L1Loss
 
 import warnings
 
-from fair_vae.datamodule import VAEDataModule, FDataConfig
+from fair_vae.configs import AEConfig
 from fair_vae.losses import reconstruction_loss, kld_loss
-from fair_vae.modules import Encoder, Decoder
-from fair_vae.util import artifacts_path, pl_bar, MetricTracker, AEConfig
+from fair_vae.models.interface import VAEFrame
+from fair_vae.models.modules import Encoder, Decoder
+from fair_vae.util import artifacts_path, pl_bar, MetricTracker
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from Fdatasets.real import Real
 
@@ -25,13 +20,16 @@ warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning)
 mse_loss = L1Loss()
 
 
-class VAE(LightningModule):
+class VAE(VAEFrame):
+    model_impl = 'VAE'
+
     def __init__(self, ae_config: AEConfig, *args, **kwargs):
-        super(VAE, self).__init__(*args, **kwargs)
+        super(VAE, self).__init__(ae_config, *args, **kwargs)
 
-        self.save_hyperparameters()
-
-        self.config = ae_config
+        self.encoder = Encoder(self.config.x_data_shape, self.config.compress_dims, self.config.embedding_dim,
+                               mode=self.config.mode)
+        self.decoder = Decoder(self.config.x_data_shape, self.config.compress_dims, self.config.embedding_dim,
+                               mode=self.config.mode)
 
         if not self.config.device or not torch.cuda.is_available():
             device = 'cpu'
@@ -39,14 +37,6 @@ class VAE(LightningModule):
             device = 'cuda'
 
         self._device = torch.device(device)
-
-        self.vae_data = VAEDataModule(x_data=self.config.x_data, batch_size=self.config.batch_size,
-                                      transform=self.config.use_transformer)
-
-        self.encoder = Encoder(self.vae_data.shape('x'), self.config.compress_dims, self.config.embedding_dim,
-                               mode=self.config.mode)
-        self.decoder = Decoder(self.vae_data.shape('x'), self.config.compress_dims, self.config.embedding_dim,
-                               mode=self.config.mode)
 
     def encode(self, x):
         return self.encoder(x)
@@ -72,8 +62,6 @@ class VAE(LightningModule):
 
             if torch.isnan(enc_mu).any():
                 print("enc_logvar is nan", torch.isnan(enc_logvar).any())
-                # print("logvar is nan", torch.isnan(logvar).any())
-                # print("logvar.exp() is nan", torch.isnan(logvar.exp()).any())
                 raise Exception('mu is nan')
 
             return dict(mu=enc_mu, logvar=enc_logvar, enc_st=enc_std, rec=rec_mu, rec_std=dec_std, z=z)
@@ -83,11 +71,10 @@ class VAE(LightningModule):
         ## Recon loss ##
         if self.config.use_transformer:
             if self.config.mode == 'VAE':
-                recon_loss = reconstruction_loss(self.vae_data.transformer['x'], pred_result['rec'], x,
-                                                 pred_result['rec_std'],
-                                                 self.loss_factor)
+                recon_loss = reconstruction_loss(self.transformer['x'], pred_result['rec'], x,
+                                                 pred_result['rec_std'], self.config.loss_factor)
             else:
-                recon_loss = reconstruction_loss(self.vae_data.transformer['x'], pred_result['rec'], x)
+                recon_loss = reconstruction_loss(self.transformer['x'], pred_result['rec'], x)
         else:
             recon_loss = self.config.loss_factor * mse_loss(pred_result['rec'], x)
 
@@ -157,37 +144,22 @@ class VAE(LightningModule):
     def configure_optimizers(self):
         return Adam(self.parameters(), weight_decay=self.config.l2scale)
 
-    def fit(self, epochs, batch_size):
+    def fit(self, vae_data):
 
-        self.config.epochs = epochs
-        self.config.batch_size = batch_size
+        self.transformer = vae_data.transformer
 
-        model_path = artifacts_path.joinpath(self.config.name)
+        model_path = artifacts_path.joinpath(self.model_impl)
 
-        early_stop_callback = EarlyStopping(monitor="train_loss", min_delta=0.05, patience=100, verbose=False,
-                                            mode="min")
-
-        checkpoint_callback = ModelCheckpoint(
-            monitor="val_loss",
-            dirpath=model_path,
-            filename=self.config.name + "-{epoch:02d}-{val_loss:.2f}",
-            save_top_k=3,
-            mode="min",
-        )
-
-        cb_log = MetricTracker()
-
-        callbacks = [checkpoint_callback, pl_bar, early_stop_callback, cb_log]
-
-        # logger = set_wandb(basic_model_config, project='leoleo', job_type='vae_leoleo')
+        callbacks = self.callbacks(model_path)
+        callbacks.append(pl_bar)
 
         trainer = pl.Trainer(max_epochs=self.config.epochs, log_every_n_steps=8, callbacks=callbacks)
 
-        start_test_loss_log = trainer.test(self, self.vae_data)
-        log_train = trainer.fit(self, self.vae_data)
-        end_test_loss_log = trainer.test(self, self.vae_data)
+        start_test_loss_log = trainer.test(self, vae_data)
+        log_train = trainer.fit(self, vae_data)
+        end_test_loss_log = trainer.test(self, vae_data)
 
-        callbacks[3].plot('loss')
+        callbacks[2].plot('loss')
 
 
 # if __name__ == '__main__':
@@ -198,11 +170,12 @@ Tests
 # %% Data set
 # db = Real.income()
 # df = db.to_df()
-#
-# # %%
-# config = AEConfig(x_data=VAEData(data=db.x.to_numpy()))
-# vae = VAE(config)
-# vae.fit(epochs=100, batch_size=500)
+
+# %%
+
+
+# %%
+
 #
 # # %%
 #
