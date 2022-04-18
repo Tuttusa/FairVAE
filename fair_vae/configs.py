@@ -9,8 +9,8 @@ from pydantic import BaseModel
 class AEConfig(BaseModel):
     name: str = 'ae'
     embedding_dim: int = 128
-    compress_dims: Tuple[int] = (128, 128)
-    decompress_dims: Tuple[int] = (128, 128)
+    compress_dims: Tuple[int, ...] = (128, 128)
+    decompress_dims: Tuple[int, ...] = (128, 128)
     num_resamples: int = 8
     device: Literal['cpu', 'gpu'] = 'cpu'
     lr: float = 1e-4

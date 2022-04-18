@@ -1,5 +1,5 @@
 import re
-from pytorch_lightning import Callback, LightningModule
+from pytorch_lightning import LightningModule
 import abc
 
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
