@@ -263,6 +263,10 @@ class VAEDataModule(pl.LightningDataModule):
 
         self._all_setup()
 
+    @classmethod
+    def elem_batch_index(self):
+        return {'x':0, 't':1, 'y':2}
+
     def shape(self, elem):
         if self.use_transformer:
             return self.transformer[elem].output_dimensions
@@ -293,19 +297,17 @@ class VAEDataModule(pl.LightningDataModule):
         val_data = [x_val_data]
         test_data = [x_test_data]
 
-        if self.data.t is not None:
-            t_train_data, t_test_data, t_val_data = self._setup(self.data, 't')
+        t_train_data, t_test_data, t_val_data = self._setup(self.data, 't')
 
-            train_data.append(t_train_data)
-            test_data.append(t_test_data)
-            val_data.append(t_val_data)
+        train_data.append(t_train_data)
+        test_data.append(t_test_data)
+        val_data.append(t_val_data)
 
-        if self.data.y is not None:
-            y_train_data, y_test_data, y_val_data = self._setup(self.data, 'y')
+        y_train_data, y_test_data, y_val_data = self._setup(self.data, 'y')
 
-            train_data.append(y_train_data)
-            test_data.append(y_test_data)
-            val_data.append(y_val_data)
+        train_data.append(y_train_data)
+        test_data.append(y_test_data)
+        val_data.append(y_val_data)
 
         self.train_data = TensorDataset(*train_data)
         self.val_data = TensorDataset(*val_data)

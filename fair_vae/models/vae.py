@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 import torchmetrics
 from torch.optim import Adam
@@ -11,9 +13,7 @@ from fair_vae.configs import AEConfig
 from fair_vae.losses import reconstruction_loss, kld_loss
 from fair_vae.models.interface import VAEFrame
 from fair_vae.models.modules import Encoder, Decoder
-from fair_vae.util import artifacts_path, pl_bar, MetricTracker
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-from Fdatasets.real import Real
+from fair_vae.util import artifacts_path, pl_bar
 
 warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning)
 
@@ -26,9 +26,9 @@ class VAE(VAEFrame):
     def __init__(self, ae_config: AEConfig, *args, **kwargs):
         super(VAE, self).__init__(ae_config, *args, **kwargs)
 
-        self.encoder = Encoder(self.config.x_data_shape, self.config.compress_dims, self.config.embedding_dim,
+        self.encoder = Encoder(self.config.input_shape, self.config.compress_dims, self.config.embedding_dim,
                                mode=self.config.mode)
-        self.decoder = Decoder(self.config.x_data_shape, self.config.compress_dims, self.config.embedding_dim,
+        self.decoder = Decoder(self.config.input_shape, self.config.compress_dims, self.config.embedding_dim,
                                mode=self.config.mode)
 
         if not self.config.device or not torch.cuda.is_available():
@@ -71,10 +71,10 @@ class VAE(VAEFrame):
         ## Recon loss ##
         if self.config.use_transformer:
             if self.config.mode == 'VAE':
-                recon_loss = reconstruction_loss(self.transformer['x'], pred_result['rec'], x,
+                recon_loss = reconstruction_loss(self.transformer[self.config.principal_elem], pred_result['rec'], x,
                                                  pred_result['rec_std'], self.config.loss_factor)
             else:
-                recon_loss = reconstruction_loss(self.transformer['x'], pred_result['rec'], x)
+                recon_loss = reconstruction_loss(self.transformer[self.config.principal_elem], pred_result['rec'], x)
         else:
             recon_loss = self.config.loss_factor * mse_loss(pred_result['rec'], x)
 
@@ -106,7 +106,7 @@ class VAE(VAEFrame):
 
     def training_step(self, batch, batch_idx, *args, **kwargs):
 
-        x = batch[0]
+        x = batch[self.config.datamodule_principal_elem_index()]
         if self._device:
             x = x.to(self._device)
         pred_result = self.forward(x)
@@ -118,7 +118,7 @@ class VAE(VAEFrame):
         return logs
 
     def validation_step(self, batch, batch_idx):
-        x = batch[0]
+        x = batch[self.config.datamodule_principal_elem_index()]
         if self._device:
             x = x.to(self._device)
         pred_result = self.forward(x)
@@ -132,7 +132,7 @@ class VAE(VAEFrame):
         return {"loss": pred_result['loss']}
 
     def test_step(self, batch, batch_idx):
-        x = batch[0]
+        x = batch[self.config.datamodule_principal_elem_index()]
         if self._device:
             x = x.to(self._device)
         pred_result = self.forward(x)
@@ -160,6 +160,44 @@ class VAE(VAEFrame):
         end_test_loss_log = trainer.test(self, vae_data)
 
         callbacks[2].plot('loss')
+
+
+# class VAE2(VAEFrame):
+#     model_impl = 'VAE2'
+#
+#     def __init__(self, ae_config: AEConfig, *args, **kwargs):
+#         super(VAE2, self).__init__(ae_config, *args, **kwargs)
+#
+#         x_ae_config = copy.deepcopy(ae_config)
+#         x_ae_config.principal_elem = 'x'
+#
+#         t_ae_config = copy.deepcopy(ae_config)
+#         t_ae_config.principal_elem = 't'
+#
+#         self.x_vae = VAE(x_ae_config)
+#         self.t_vae = VAE(t_ae_config)
+#
+#     @classmethod
+#     def load_best(self, name, config=None):
+#         if config is None:
+#             config = AEConfig()
+#
+#         x_ae_config = copy.deepcopy(config)
+#         x_ae_config.principal_elem = 'x'
+#
+#         t_ae_config = copy.deepcopy(config)
+#         t_ae_config.principal_elem = 't'
+#
+#         vae = VAE2(config)
+#
+#         vae.t_vae = VAE.load_best(name, t_ae_config.principal_elem)
+#         vae.x_vae = VAE.load_best(name, x_ae_config.principal_elem)
+#
+#         return vae
+#
+#     def fit(self, vae_data):
+#         self.x_vae.fit(vae_data)
+#         self.t_vae.fit(vae_data)
 
 
 # if __name__ == '__main__':

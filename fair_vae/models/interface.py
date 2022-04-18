@@ -16,48 +16,9 @@ class VAEFrame(LightningModule, abc.ABC):
 
         self.config = ae_config
 
-    @abc.abstractmethod
-    def encode(self, x):
-        pass
-
-    @abc.abstractmethod
-    def reparameterize(self, mu, logvar):
-        pass
-
-    @abc.abstractmethod
-    def decode(self, z):
-        pass
-
-    @abc.abstractmethod
-    def predict(self, x):
-        pass
-
-    @abc.abstractmethod
-    def loss_fn(self, pred_result, x, return_loss_comps=False):
-        pass
-
-    def forward(self, x):
-        pass
-
-    @abc.abstractmethod
-    def training_step(self, batch, batch_idx, *args, **kwargs):
-        pass
-
-    @abc.abstractmethod
-    def validation_step(self, batch, batch_idx):
-        pass
-
-    @abc.abstractmethod
-    def test_step(self, batch, batch_idx):
-        pass
-
-    @abc.abstractmethod
-    def configure_optimizers(self):
-        pass
-
-    @abc.abstractmethod
-    def fit(self, vae_data):
-        pass
+    @classmethod
+    def saving_name(self, name, princ_elem):
+        return name + princ_elem
 
     def callbacks(self, model_path):
         early_stop_callback = EarlyStopping(monitor="train_loss", min_delta=0.05, patience=100, verbose=False,
@@ -66,7 +27,7 @@ class VAEFrame(LightningModule, abc.ABC):
         checkpoint_callback = ModelCheckpoint(
             monitor="val_loss",
             dirpath=model_path,
-            filename=self.config.name + str(hash(self.config)) + "-{epoch:02d}-{val_loss:.2f}",
+            filename=self.saving_name(self.config.name, self.config.principal_elem) + self.config.hash() + "-{epoch:02d}-{val_loss:.2f}",
             save_top_k=3,
             mode="min",
         )
@@ -78,11 +39,12 @@ class VAEFrame(LightningModule, abc.ABC):
         return callbacks
 
     @classmethod
-    def load_best(self, name, config=None):
-        vae_paths = list(filter(lambda x:name in x.stem, artifacts_path.joinpath(self.model_impl).iterdir()))
+    def load_best(self, name, princ_elem, config=None):
+        vae_paths = list(
+            filter(lambda x: self.saving_name(name, princ_elem) in x.stem, artifacts_path.joinpath(self.model_impl).iterdir()))
 
         if config is not None:
-            config_hash = str(hash(config))
+            config_hash = config.hash()
 
             vae_paths = [e for e in vae_paths if config_hash in str(e)]
 
