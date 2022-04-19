@@ -1,7 +1,9 @@
-import copy
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import torchmetrics
+from evidentialdl.losses import evidential_regression_loss
 from torch.optim import Adam
 import pytorch_lightning as pl
 import torch
@@ -20,6 +22,35 @@ warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning)
 mse_loss = L1Loss()
 
 
+@dataclass
+class VAEObj:
+    enc_mu: Any = None
+    rec_mu: Any = None
+
+    enc_logvar: Any = None
+    enc_std: Any = None
+    z: Any = None
+
+    rec_logvar: Any = None
+    rec_std: Any = None
+
+    # uncertainty dec
+
+    rec_v: Any = None
+    rec_alpha: Any = None
+    rec_beta: Any = None
+    rec_alea: Any = None
+    rec_epis: Any = None
+
+    # losses
+
+    loss: Any = None
+    recon_loss: Any = None
+    kl: Any = None
+    log_lik: Any = None
+    recon_metric: Any = None
+
+
 class VAE(VAEFrame):
     model_impl = 'VAE'
 
@@ -29,7 +60,7 @@ class VAE(VAEFrame):
         self.encoder = Encoder(self.config.input_shape, self.config.compress_dims, self.config.embedding_dim,
                                mode=self.config.mode)
         self.decoder = Decoder(self.config.input_shape, self.config.compress_dims, self.config.embedding_dim,
-                               mode=self.config.mode)
+                               mode=self.config.mode, uncertainty=self.config.uncertainty_decoder)
 
         if not self.config.device or not torch.cuda.is_available():
             device = 'cpu'
@@ -37,6 +68,10 @@ class VAE(VAEFrame):
             device = 'cuda'
 
         self._device = torch.device(device)
+
+        self.uncert_loss = None
+        if self.config.uncertainty_decoder:
+            self.uncert_loss = evidential_regression_loss(coeff=1e-2)
 
     def encode(self, x):
         return self.encoder(x)
@@ -50,59 +85,83 @@ class VAE(VAEFrame):
         return self.decoder(z)
 
     def predict(self, x):
-        if self.config.mode == 'AE':
-            mu, _ = self.encode(x)
-            rec, _ = self.decode(mu)
-            return dict(mu=mu, rec=rec)
-        else:
-            enc_mu, enc_logvar = self.encode(x)
-            z, enc_std = self.reparameterize(enc_mu, enc_logvar)
-            rec_mu, rec_logvar = self.decode(enc_mu)
-            _, dec_std = self.reparameterize(rec_mu, rec_logvar)
+        vae_obj = VAEObj()
 
-            if torch.isnan(enc_mu).any():
-                print("enc_logvar is nan", torch.isnan(enc_logvar).any())
-                raise Exception('mu is nan')
+        enc = self.encode(x)
+        rec = self.decode(enc.mu)
 
-            return dict(mu=enc_mu, logvar=enc_logvar, enc_st=enc_std, rec=rec_mu, rec_std=dec_std, z=z)
+        vae_obj.enc_mu = enc.mu
+        vae_obj.rec_mu = rec.mu
 
-    def loss_fn(self, pred_result, x, return_loss_comps=False):
+        if torch.isnan(enc.mu).any():
+            print("enc_logvar is nan", torch.isnan(enc.logvar).any())
+            raise Exception('mu is nan')
+
+        if self.config.mode == 'VAE':
+            z, enc_std = self.reparameterize(enc.mu, enc.logvar)
+
+            _, dec_std = self.reparameterize(rec.mu, rec.logvar)
+
+            vae_obj.enc_std = enc_std
+            vae_obj.z = z
+
+            vae_obj.rec_std = dec_std
+
+        if self.config.uncertainty_decoder:
+            vae_obj.rec_v = rec.v
+            vae_obj.rec_alpha = rec.alpha
+            vae_obj.rec_beta = rec.beta
+            vae_obj.rec_alea = rec.aleatoric
+            vae_obj.rec_epis = rec.epistemic
+
+        return vae_obj
+
+    def loss_fn(self, pred_result, x, uncertainty_recon_loss=None):
 
         ## Recon loss ##
         if self.config.use_transformer:
             if self.config.mode == 'VAE':
-                recon_loss = reconstruction_loss(self.transformer[self.config.principal_elem], pred_result['rec'], x,
-                                                 pred_result['rec_std'], self.config.loss_factor)
+                recon_loss = reconstruction_loss(self.transformer[self.config.principal_elem], pred_result.rec_mu, x,
+                                                 pred_result.rec_std, self.config.loss_factor)
             else:
-                recon_loss = reconstruction_loss(self.transformer[self.config.principal_elem], pred_result['rec'], x)
+                recon_loss = reconstruction_loss(self.transformer[self.config.principal_elem], pred_result.rec_mu, x,
+                                                 loss_factor=self.config.loss_factor)
         else:
-            recon_loss = self.config.loss_factor * mse_loss(pred_result['rec'], x)
+            recon_loss = self.config.loss_factor * mse_loss(pred_result.rec_mu, x)
+
+        uncert_loss = 0.0
+        if self.config.uncertainty_decoder:
+            pred_res = (pred_result.rec_mu, pred_result.rec_v, pred_result.rec_alpha, pred_result.rec_beta,
+                        pred_result.rec_alea, pred_result.rec_epis)
+            uncert_loss = self.uncert_loss(x, pred_res)
 
         ## recon metric ##
-        recon_metric = torchmetrics.functional.mean_absolute_percentage_error(x, pred_result['rec'])
+        recon_metric = torchmetrics.functional.mean_absolute_percentage_error(x, pred_result.rec_mu)
 
         ## KL Divergence ##
         kl = 0.0
 
         if self.config.mode == 'VAE':
-            kl = kld_loss(pred_result['mu'], pred_result['logvar'])
+            kl = kld_loss(pred_result.rec_mu, pred_result.rec_logvar)
 
         log_lik = 0.0
 
-        loss = recon_loss + kl + log_lik
+        loss = recon_loss + kl + log_lik + uncert_loss
 
-        if not return_loss_comps:
-            return loss
-        else:
-            return loss, recon_loss, kl, log_lik, recon_metric
+        pred_result.loss = loss
+        pred_result.recon_loss = loss
+        pred_result.kl = kl
+        pred_result.log_lik = log_lik
+        pred_result.recon_metric = recon_metric
+
+        return pred_result
 
     def forward(self, x):
         pred_result = self.predict(x)
 
-        loss, recon_loss, kl, log_lik, recon_metric = self.loss_fn(pred_result, x, return_loss_comps=True)
+        pred_result = self.loss_fn(pred_result, x, self.uncert_loss)
 
-        return dict(x=x, loss=loss, kl=kl, recon_loss=recon_loss, log_lik=log_lik, recon_metric=recon_metric,
-                    **pred_result)
+        return pred_result
 
     def training_step(self, batch, batch_idx, *args, **kwargs):
 
@@ -123,13 +182,13 @@ class VAE(VAEFrame):
             x = x.to(self._device)
         pred_result = self.forward(x)
 
-        self.log('val_loss', pred_result['loss'], on_step=True, logger=True)
+        self.log('val_loss', pred_result.loss, on_step=True, logger=True)
 
         val_test_loss = torchmetrics.functional.mean_absolute_percentage_error(x, pred_result['rec'])
 
         self.log('val_test_loss', val_test_loss, on_step=True, logger=True)
 
-        return {"loss": pred_result['loss']}
+        return {"loss": pred_result.loss}
 
     def test_step(self, batch, batch_idx):
         x = batch[self.config.datamodule_principal_elem_index()]
@@ -137,7 +196,7 @@ class VAE(VAEFrame):
             x = x.to(self._device)
         pred_result = self.forward(x)
 
-        loss = torchmetrics.functional.mean_absolute_percentage_error(x, pred_result['rec'])
+        loss = torchmetrics.functional.mean_absolute_percentage_error(x, pred_result.rec_mu)
         self.log('test_loss', loss.item(), prog_bar=True, on_step=True, logger=True)
         return {"loss": loss}
 

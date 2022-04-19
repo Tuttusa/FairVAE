@@ -13,6 +13,7 @@ class AEConfig(BaseModel):
     decompress_dims: Tuple[int, ...] = (128, 128)
     num_resamples: int = 8
     device: Literal['cpu', 'gpu'] = 'cpu'
+    uncertainty_decoder = False
     lr: float = 1e-4
     batch_size: int = 500
     epochs: int = 1

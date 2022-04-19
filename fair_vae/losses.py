@@ -25,13 +25,15 @@ def kld_loss(mu, logvar):
 
 
 def reconstruction_loss(transformer: DataTransformer, recon_x, x, sigmas=None, loss_factor=1.0):
+    recon_loss_func = lambda x, rec_x: (x - torch.tanh(rec_x)) ** 2 / 2
+
     st = 0
     loss = []
     for column_info in transformer.output_info_list:
         for span_info in column_info:
             if span_info.activation_fn != "softmax":
                 ed = st + span_info.dim
-                loss_val = (x[:, st] - torch.tanh(recon_x[:, st])) ** 2 / 2
+                loss_val = recon_loss_func(x[:, st], recon_x[:, st])
                 if sigmas is not None:
                     std = sigmas[:, st]
                     loss_val /= (std ** 2)

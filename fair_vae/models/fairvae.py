@@ -35,11 +35,11 @@ class FVAE(VAEFrame):
 
         decoder1_inp_size = self.encoder2.output_size + self.config.y_data_shape
         self.decoder1 = Decoder(self.encoder1.output_size, self.config.decompress_dims, decoder1_inp_size,
-                                self.config.mode)  # p(z1 | z2, y)
+                                self.config.mode, uncertainty=self.config.uncertainty_decoder)  # p(z1 | z2, y)
 
         decoder2_inp_size = self.decoder1.output_size + self.config.t_data_shape
         self.decoder2 = Decoder(self.config.x_data_shape, self.config.decompress_dims, decoder2_inp_size,
-                                self.config.mode)  # p(x | z1, t)
+                                self.config.mode, uncertainty=self.config.uncertainty_decoder)  # p(x | z1, t)
 
     def encode(self, x, t, y):
         z1 = self.encoder1(torch.cat([x, t], dim=-1))

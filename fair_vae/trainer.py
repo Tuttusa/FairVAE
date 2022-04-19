@@ -37,12 +37,14 @@ class VAETrainer:
 
 
 # %%
-# db = Real.income()
-# %%
-# model_config = AEConfig()
-#
-# ae = VAETrainer.fit(db, model_config)
-# aeb = VAETrainer.load(model_config.name)
+db = Real.income()
+
+#%%
+model_config = AEConfig(name='ae', mode='AE', uncertainty_decoder=True)
+model_config.principal_elem = 'x'
+
+ae = VAETrainer.fit(db, model_config)
+aeb = VAETrainer.load(model_config.name, model_config.principal_elem,  model='AE')
 
 # %%
 # model_config = AEConfig(name='vae', mode='VAE')
