@@ -170,9 +170,9 @@ class VAE(VAEFrame):
             x = x.to(self._device)
         pred_result = self.forward(x)
 
-        self.log(f"train_loss", pred_result['loss'], on_step=True, logger=True)
+        self.log(f"train_loss", pred_result.loss, on_step=True, logger=True)
 
-        logs = {"loss": pred_result['loss']}
+        logs = {"loss": pred_result.loss}
 
         return logs
 
@@ -184,7 +184,7 @@ class VAE(VAEFrame):
 
         self.log('val_loss', pred_result.loss, on_step=True, logger=True)
 
-        val_test_loss = torchmetrics.functional.mean_absolute_percentage_error(x, pred_result['rec'])
+        val_test_loss = torchmetrics.functional.mean_absolute_percentage_error(x, pred_result.rec_mu)
 
         self.log('val_test_loss', val_test_loss, on_step=True, logger=True)
 
