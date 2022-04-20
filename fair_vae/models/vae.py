@@ -171,7 +171,7 @@ class VAE(VAEFrame):
 
     def transform_encode(self, data):
         with torch.no_grad():
-            return self.encode(torch.from_numpy(self.transformer['x'].transform(data)).float())
+            return self.encode(torch.from_numpy(self.transformer['x'].transform(data)).float())[0]
 
     # def transform_decode(self, data):
     #     with torch.no_grad():
