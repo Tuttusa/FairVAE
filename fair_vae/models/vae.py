@@ -144,9 +144,17 @@ class VAE(VAEFrame):
     def configure_optimizers(self):
         return Adam(self.parameters(), weight_decay=self.config.l2scale)
 
+    def on_save_checkpoint(self, checkpoint) -> None:
+        checkpoint["transformer"] = self.transformer
+
+    def on_load_checkpoint(self, checkpoint) -> None:
+        self.transformer = checkpoint["transformer"]
+
     def fit(self, vae_data):
 
         self.transformer = vae_data.transformer
+
+        self.save_hyperparameters()
 
         model_path = artifacts_path.joinpath(self.model_impl)
 
@@ -160,6 +168,15 @@ class VAE(VAEFrame):
         end_test_loss_log = trainer.test(self, vae_data)
 
         callbacks[2].plot('loss')
+
+    def transform_encode(self, data):
+        with torch.no_grad():
+            return self.encode(torch.from_numpy(self.transformer['x'].transform(data)).float())
+
+    # def transform_decode(self, data):
+    #     with torch.no_grad():
+    #         return self.encode(torch.from_numpy(self.transformer['x'].transform(data)).float())
+
 
 
 # class VAE2(VAEFrame):

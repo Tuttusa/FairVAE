@@ -187,6 +187,12 @@ class FVAE(VAEFrame):
     def configure_optimizers(self):
         return Adam(self.parameters(), weight_decay=self.config.l2scale)
 
+    def on_save_checkpoint(self, checkpoint) -> None:
+        checkpoint["transformer"] = self.transformer
+
+    def on_load_checkpoint(self, checkpoint) -> None:
+        self.transformer = checkpoint["transformer"]
+
     def fit(self, vae_data):
 
         self.transformer = vae_data.transformer
@@ -203,6 +209,10 @@ class FVAE(VAEFrame):
 
         # diff_loss = start_test_loss_log[0]['test_loss'] - end_test_loss_log[0]['test_loss']
         callbacks[2].plot('loss')
+
+    def transform_encode(self, data):
+        with torch.no_grad():
+            return self.encode(torch.from_numpy(self.transformer['x'].transform(data)).float())
 
 # %% Data set
 # db = Real.income()
