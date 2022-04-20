@@ -169,9 +169,9 @@ class VAE(VAEFrame):
 
         callbacks[2].plot('loss')
 
-    def transform_encode(self, data):
+    def transform_encode(self, data, elem):
         with torch.no_grad():
-            return self.encode(torch.from_numpy(self.transformer['x'].transform(data)).float())[0]
+            return self.encode(torch.from_numpy(self.transformer[elem].transform(data)).float())[0]
 
     # def transform_decode(self, data):
     #     with torch.no_grad():
